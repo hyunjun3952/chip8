@@ -1,0 +1,4 @@
+* text=auto eol=lf
+*.asm text eol=lf
+Makefile text eol=lf
+*.ch8 binary
