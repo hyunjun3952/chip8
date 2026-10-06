@@ -20,12 +20,18 @@ main:
     jnz .fail
 
     mov word [pc], 0x200 ; programs start at 0x200(= 512)
-
+    
+    ; return 0
+    xor eax, eax
+    pop rbx
+.loop:
     ; fetch
     movzx rbx, word [pc]
     ; (movbe ax, [mem + rbx] does both lines in one)
     movzx eax, word [mem + rbx] ; read 2 bytes (little endian)
     rol ax, 8 ; swap bytes to big endian opcode
+
+    add word [pc], 2
 
     ; print opcode
     lea rdi, [fmt]
@@ -33,9 +39,10 @@ main:
     xor eax, eax ; no vector args for printf
     call printf
 
-    ; return 0
-    xor eax, eax
-    pop rbx
+    ; loop
+    cmp word [pc], 0x200 + 20 ; check pc approached to 0x214
+    jb .loop
+
     ret
 .fail:
     mov eax, 1
@@ -54,7 +61,7 @@ load_rom:
     lea rdi, [mem + 0x200] ; dest
     mov esi, 1 ; elem size
     mov edx, 4096 - 0x200 ; max cnt
-    mov rcx, rbx ; FILE*
+    mov rcx, rbx
     call fread
 
     mov rdi, rbx
