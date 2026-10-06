@@ -39,7 +39,6 @@ main:
     xor eax, eax ; no vector args for printf
     call printf
 
-    ; loop
     cmp word [pc], 0x200 + 20 ; check if pc has reached 0x214
     jb .loop
 
