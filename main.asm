@@ -40,7 +40,7 @@ main:
     call printf
 
     ; loop
-    cmp word [pc], 0x200 + 20 ; check pc approached to 0x214
+    cmp word [pc], 0x200 + 20 ; check if pc has reached 0x214
     jb .loop
 
     ret
