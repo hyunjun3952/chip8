@@ -1,13 +1,25 @@
 default rel ; rip-relative addressing
 extern fopen, fread, fclose, printf
 
+%macro GET_X 1 ; %1 = dest reg, X = bits 8..11 of the opcode (eax)
+    mov %1, eax
+    shr %1, 8
+    and %1, 0xF
+%endmacro
+
+%macro GET_Y 1 ; %1 = dest reg, Y = bits 4..7 of the opcode (eax)
+    mov %1, eax
+    shr %1, 4
+    and %1, 0xF
+%endmacro
+
 section .data
     mode_rb db "rb", 0
     fmt db "%04X", 10, 0
     ; handler per upper nibble of the opcode (index = upper nibble)
-    table dq op_0xxx, op_1nnn,    op_2nnn, op_3xnn ; 0 1 2 3
-          dq op_4xnn, op_5xy0, op_6xnn,    op_7xnn    ; 4 5 6 7
-          dq op_unknown, op_9xy0, op_annn,    op_unknown ; 8 9 A B
+    table dq op_0xxx,    op_1nnn,    op_2nnn,    op_3xnn    ; 0 1 2 3
+          dq op_4xnn,    op_5xy0,    op_6xnn,    op_7xnn    ; 4 5 6 7
+          dq op_unknown, op_9xy0,    op_annn,    op_unknown ; 8 9 A B
           dq op_unknown, op_unknown, op_unknown, op_unknown ; C D E F
 
 section .bss
@@ -16,7 +28,7 @@ section .bss
     v   resb 16   ; V0 ~ VF registers
     i   resw 1    ; I register
     stack resw 16 ; call stack: 16 return addresses (2 byte each)
-    sptr resb 1 ; stack pointer (idx into stack, 0 = empty)
+    sptr resb 1   ; stack pointer (idx into stack, 0 = empty)
 
 section .text
     global main
@@ -48,8 +60,8 @@ main:
     jmp [rdx + rcx * 8] ; each table entry is 8 bytes
 
 .next: ; handlers jump back here
-    cmp word [pc], 0x200 + 20 ; check if pc has reached 0x214
-    jb .loop ; only first 10 opcodes for now
+    cmp word [pc], 0x200 + 20 ; only the first 10 opcodes for now
+    jb .loop
 
     xor eax, eax ; return 0
     pop rbx ; restore rbx right before returning
@@ -59,7 +71,8 @@ main:
     pop rbx
     ret
 
-op_0xxx: ; only 0x00EE for now
+; opcode handlers: eax = opcode, jump (not ret) back to main.next
+op_0xxx: ; ret (0x00EE) only for now, 00E0 falls to op_unknown
     cmp ax, 0x00EE
     jne op_unknown
     movzx ecx, byte [sptr]
@@ -67,10 +80,9 @@ op_0xxx: ; only 0x00EE for now
     mov [sptr], cl
     lea rdx, [stack]
     movzx eax, word [rdx + rcx * 2] ; 2 bytes per entry
-    mov [pc], ax ; 2 bytes per entry
+    mov [pc], ax ; return address -> pc
     jmp main.next
 
-; opcode handlers: eax = opcode, jump (not ret) back to main.next
 op_1nnn: ; pc = NNN
     and eax, 0x0FFF
     mov [pc], ax
@@ -88,71 +100,51 @@ op_2nnn: ; call: push pc, pc = NNN
     jmp main.next
 
 op_3xnn: ; skip next if V[X] == NN
-    mov ecx, eax
-    shr ecx, 8
-    and ecx, 0xF ; X
+    GET_X ecx
     lea rdx, [v]
     cmp [rdx + rcx], al ; al = NN
-    jne main.next
-    add word [pc], 2 ; skip one opcode
+    je skip_next
     jmp main.next
 
 op_4xnn: ; skip next if V[X] != NN
-    mov ecx, eax
-    shr ecx, 8
-    and ecx, 0xF
+    GET_X ecx
     lea rdx, [v]
     cmp [rdx + rcx], al
-    je main.next
-    add word [pc], 2
+    jne skip_next
     jmp main.next
 
 op_5xy0: ; skip next if V[X] == V[Y]
     test al, 0x0F ; lowest nibble must be 0
     jnz op_unknown
-    mov ecx, eax
-    shr ecx, 8
-    and ecx, 0xF ; X
-    mov esi, eax
-    shr esi, 4
-    and esi, 0xF ; Y
+    GET_X ecx
+    GET_Y esi
     lea rdx, [v]
     mov r8b, [rdx + rcx] ; cmp can't take two mem operands
     cmp r8b, [rdx + rsi]
-    jne main.next
-    add word [pc], 2
+    je skip_next
     jmp main.next
 
 op_6xnn: ; V[X] = NN
-    mov ecx, eax
-    shr ecx, 8
-    and ecx, 0xF ; X
+    GET_X ecx
     lea rdx, [v]
     mov [rdx + rcx], al ; al = lower byte = NN
     jmp main.next
 
 op_7xnn: ; V[X] += NN (byte add wraps at 256, VF untouched)
-    mov ecx, eax
-    shr ecx, 8
-    and ecx, 0xF ; X
+    GET_X ecx
     lea rdx, [v]
     add [rdx + rcx], al ; al = NN
     jmp main.next
 
 op_9xy0: ; skip next if V[X] != V[Y]
-    test al, 0x0F
+    test al, 0x0F ; lowest nibble must be 0
     jnz op_unknown
-    mov ecx, eax
-    shr ecx, 8
-    and ecx, 0xF
-    mov esi, eax
-    shr esi, 4
-    and esi, 0xF
+    GET_X ecx
+    GET_Y esi
     lea rdx, [v]
-    mov r8b, [rdx + rcx]
+    mov r8b, [rdx + rcx] ; cmp can't take two mem operands
     cmp r8b, [rdx + rsi]
-    je main.next
-    add word [pc], 2
+    jne skip_next
     jmp main.next
 
 op_annn: ; I = NNN
@@ -160,9 +152,13 @@ op_annn: ; I = NNN
     mov [i], ax
     jmp main.next
 
+skip_next: ; shared by the skip ops: pc += 2 (skip one opcode)
+    add word [pc], 2
+    jmp main.next
+
 ; not implemented yet (or invalid opcode), print it for now
 ; once every group is implemented, this should report invalid opcodes and stop
-; 00E0 00EE 2NNN 3XNN 4XNN 5XY0 8XY? 9XY0 BNNN CXNN DXYN EX9E EXA1 FX??
+; 00E0 8XY? BNNN CXNN DXYN EX9E EXA1 FX??
 op_unknown:
     lea rdi, [fmt]
     mov esi, eax
