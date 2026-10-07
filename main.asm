@@ -5,9 +5,9 @@ section .data
     mode_rb db "rb", 0
     fmt db "%04X", 10, 0
     ; handler per upper nibble of the opcode (index = upper nibble)
-    table dq op_unknown, op_1nnn,    op_unknown, op_unknown ; 0 1 2 3
-          dq op_unknown, op_unknown, op_6xnn,    op_7xnn    ; 4 5 6 7
-          dq op_unknown, op_unknown, op_annn,    op_unknown ; 8 9 A B
+    table dq op_0xxx, op_1nnn,    op_2nnn, op_3xnn ; 0 1 2 3
+          dq op_4xnn, op_5xy0, op_6xnn,    op_7xnn    ; 4 5 6 7
+          dq op_unknown, op_9xy0, op_annn,    op_unknown ; 8 9 A B
           dq op_unknown, op_unknown, op_unknown, op_unknown ; C D E F
 
 section .bss
@@ -15,6 +15,8 @@ section .bss
     pc  resw 1    ; program counter
     v   resb 16   ; V0 ~ VF registers
     i   resw 1    ; I register
+    stack resw 16 ; call stack: 16 return addresses (2 byte each)
+    sptr resb 1 ; stack pointer (idx into stack, 0 = empty)
 
 section .text
     global main
@@ -57,10 +59,68 @@ main:
     pop rbx
     ret
 
+op_0xxx: ; only 0x00EE for now
+    cmp ax, 0x00EE
+    jne op_unknown
+    movzx ecx, byte [sptr]
+    dec ecx ; sptr points to the next free slot, so step back first
+    mov [sptr], cl
+    lea rdx, [stack]
+    movzx eax, word [rdx + rcx * 2] ; 2 bytes per entry
+    mov [pc], ax ; 2 bytes per entry
+    jmp main.next
+
 ; opcode handlers: eax = opcode, jump (not ret) back to main.next
 op_1nnn: ; pc = NNN
     and eax, 0x0FFF
     mov [pc], ax
+    jmp main.next
+
+op_2nnn: ; call: push pc, pc = NNN
+    movzx ecx, byte [sptr]
+    lea rdx, [stack]
+    movzx esi, word [pc] ; already points to the next opcode
+    mov [rdx + rcx * 2], si
+    inc ecx
+    mov [sptr], cl
+    and eax, 0x0FFF
+    mov [pc], ax
+    jmp main.next
+
+op_3xnn: ; skip next if V[X] == NN
+    mov ecx, eax
+    shr ecx, 8
+    and ecx, 0xF ; X
+    lea rdx, [v]
+    cmp [rdx + rcx], al ; al = NN
+    jne main.next
+    add word [pc], 2 ; skip one opcode
+    jmp main.next
+
+op_4xnn: ; skip next if V[X] != NN
+    mov ecx, eax
+    shr ecx, 8
+    and ecx, 0xF
+    lea rdx, [v]
+    cmp [rdx + rcx], al
+    je main.next
+    add word [pc], 2
+    jmp main.next
+
+op_5xy0: ; skip next if V[X] == V[Y]
+    test al, 0x0F ; lowest nibble must be 0
+    jnz op_unknown
+    mov ecx, eax
+    shr ecx, 8
+    and ecx, 0xF ; X
+    mov esi, eax
+    shr esi, 4
+    and esi, 0xF ; Y
+    lea rdx, [v]
+    mov r8b, [rdx + rcx] ; cmp can't take two mem operands
+    cmp r8b, [rdx + rsi]
+    jne main.next
+    add word [pc], 2
     jmp main.next
 
 op_6xnn: ; V[X] = NN
@@ -77,6 +137,22 @@ op_7xnn: ; V[X] += NN (byte add wraps at 256, VF untouched)
     and ecx, 0xF ; X
     lea rdx, [v]
     add [rdx + rcx], al ; al = NN
+    jmp main.next
+
+op_9xy0: ; skip next if V[X] != V[Y]
+    test al, 0x0F
+    jnz op_unknown
+    mov ecx, eax
+    shr ecx, 8
+    and ecx, 0xF
+    mov esi, eax
+    shr esi, 4
+    and esi, 0xF
+    lea rdx, [v]
+    mov r8b, [rdx + rcx]
+    cmp r8b, [rdx + rsi]
+    je main.next
+    add word [pc], 2
     jmp main.next
 
 op_annn: ; I = NNN
