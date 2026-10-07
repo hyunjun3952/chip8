@@ -159,6 +159,13 @@ skip_next: ; shared by the skip ops: pc += 2 (skip one opcode)
 ; not implemented yet (or invalid opcode), print it for now
 ; once every group is implemented, this should report invalid opcodes and stop
 ; 00E0 8XY? BNNN CXNN DXYN EX9E EXA1 FX??
+; TODO:
+;   1. CXNN: V[X] = rand() & NN
+;   2. 8XY?: 16 sub-ops, mind VF (carry/borrow/shifted-out bit) and the X == F case
+;   3. FX07 FX1E FX33 FX55 FX65 (no I/O needed)
+;   4. timers (FX15 FX18): decrement at 60Hz
+;   5. display/input (needs SDL or terminal): 00E0 DXYN EX9E EXA1 FX0A FX29
+;   6. replace the 10-opcode limit in main.next with a real run loop
 op_unknown:
     lea rdi, [fmt]
     mov esi, eax
