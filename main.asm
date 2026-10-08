@@ -24,7 +24,6 @@ section .data
 
 section .bss
     mem resb 4096 ; chip8 memory (= 4KB)
-    pc  resw 1    ; program counter
     v   resb 16   ; V0 ~ VF registers
     i   resw 1    ; I register
     stack resw 16 ; call stack: 16 return addresses (2 byte each)
@@ -42,16 +41,15 @@ main:
     test eax, eax
     jnz .fail
 
-    mov word [pc], 0x200 ; programs start at 0x200(= 512)
+    mov ebx, 0x200 ; EBX = CHIP-8 PC
 
 .loop:
     ; fetch
     lea rdx, [mem] ; base address (rip-relative can't be combined with an index)
-    movzx ebx, word [pc] ; zero extend to use as index
     movzx eax, word [rdx + rbx] ; read 2 bytes (little endian)
     rol ax, 8 ; swap bytes to big endian opcode
 
-    add word [pc], 2 ; next opcode (2 bytes each)
+    add ebx, 2
 
     ; decode: branch to the upper nibble
     mov ecx, eax
@@ -60,7 +58,7 @@ main:
     jmp [rdx + rcx * 8] ; each table entry is 8 bytes
 
 .next: ; handlers jump back here
-    cmp word [pc], 0x200 + 20 ; only the first 10 opcodes for now
+    cmp ebx, 0x200 + 20 ; only the first 10 opcodes for now
     jb .loop
 
     xor eax, eax ; return 0
@@ -79,24 +77,22 @@ op_0xxx: ; ret (0x00EE) only for now, 00E0 falls to op_unknown
     dec ecx ; sptr points to the next free slot, so step back first
     mov [sptr], cl
     lea rdx, [stack]
-    movzx eax, word [rdx + rcx * 2] ; 2 bytes per entry
-    mov [pc], ax ; return address -> pc
+    movzx ebx, word [rdx + rcx * 2] ; 2 bytes per entry
     jmp main.next
 
-op_1nnn: ; pc = NNN
+op_1nnn: ; EBX = NNN
     and eax, 0x0FFF
-    mov [pc], ax
+    mov ebx, eax
     jmp main.next
 
-op_2nnn: ; call: push pc, pc = NNN
+op_2nnn:
     movzx ecx, byte [sptr]
     lea rdx, [stack]
-    movzx esi, word [pc] ; already points to the next opcode
-    mov [rdx + rcx * 2], si
+    mov [rdx + rcx * 2], bx    
     inc ecx
     mov [sptr], cl
     and eax, 0x0FFF
-    mov [pc], ax
+    mov ebx, eax
     jmp main.next
 
 op_3xnn: ; skip next if V[X] == NN
@@ -153,7 +149,7 @@ op_annn: ; I = NNN
     jmp main.next
 
 skip_next: ; shared by the skip ops: pc += 2 (skip one opcode)
-    add word [pc], 2
+    add ebx, 2
     jmp main.next
 
 ; not implemented yet (or invalid opcode), print it for now
