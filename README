@@ -1,0 +1,41 @@
+// chip8: a CHIP-8 emulator in x86-64 assembly (NASM), linked against libc with gcc
+// no SDL yet. no display yet. 10 opcodes then it quits.
+
+// build / run
+//   make        (needs nasm + gcc)
+//   make run    (runs pong.ch8)
+//   ./chip8 some.ch8
+
+// CHIP-8 is a fake computer from the 1970s. the whole machine is
+//   4096 bytes of memory (ROM is loaded at 0x200)
+//   V0..VF, 16 8-bit registers (VF is the flag register)
+//   I, a 16-bit address register
+//   PC, 16-bit program counter
+//   a stack of 16 return addresses
+//   64x32 1-bit display, 16 keys, two 60Hz timers
+// every instruction is 2 bytes, big endian. x86 is little endian, so rol ax, 8 after the load.
+
+// register map
+//   ebx   CHIP-8 PC
+//   r12   &mem (rip-relative addressing can't take an index, so keep the base in a register)
+//   eax   current opcode (handlers read it from here)
+//   ecx, edx, esi, r8   scratch
+
+// decode
+//   no big switch. upper nibble of the opcode indexes a table of 16 handlers
+//     jmp [table + (op >> 12) * 8]
+//   handlers jump back to main.next, they don't ret
+//   unimplemented opcodes go to op_unknown, which prints them with printf
+
+// done
+//   1NNN 2NNN 00EE            jump, call, return
+//   3XNN 4XNN 5XY0 9XY0       skips
+//   6XNN 7XNN ANNN            set V[X], add to V[X], set I
+
+// todo (see the end of main.asm)
+//   CXNN, 8XY?, FX07 FX1E FX33 FX55 FX65
+//   timers (FX15 FX18) at 60Hz
+//   00E0 DXYN EX9E EXA1 FX0A FX29 + font + SDL2 (uncomment the LIBS line in the Makefile)
+//   a real run loop instead of 10 opcodes
+
+// this is a learning project. first assembly program. expect bugs.
