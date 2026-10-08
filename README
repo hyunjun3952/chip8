@@ -1,5 +1,5 @@
 // chip8: a CHIP-8 emulator in x86-64 assembly (NASM), linked against libc with gcc
-// no SDL yet. no display yet. 10 opcodes then it quits.
+// no SDL yet. no display yet. it runs until it hits an opcode it doesn't know.
 
 // build / run
 //   make        (needs nasm + gcc)
@@ -17,25 +17,32 @@
 
 // register map
 //   ebx   CHIP-8 PC
-//   r12   &mem (rip-relative addressing can't take an index, so keep the base in a register)
+//   r12   &state: memory first, then V, I, the stack and its pointer, all at fixed offsets
+//         (rip-relative addressing can't take an index, so keep the base in a register)
 //   eax   current opcode (handlers read it from here)
-//   ecx, edx, esi, r8   scratch
+//   ecx, edx, esi   scratch
 
 // decode
 //   no big switch. upper nibble of the opcode indexes a table of 16 handlers
 //     jmp [table + (op >> 12) * 8]
 //   handlers jump back to main.next, they don't ret
-//   unimplemented opcodes go to op_unknown, which prints them with printf
+//   unimplemented opcodes go to op_unknown: it prints "bad opcode OP at PC" to stderr and exits 1
+//   every failure goes through die (main.asm): short message on stderr, then exit 1
+
+// exit codes
+//   0 clean exit (nothing uses it yet, there is no quit key)
+//   1 any failure: no argument, rom can't be opened / is empty / is bigger than 3584 bytes,
+//     pc past 0xFFE, stack overflow / underflow, unknown opcode
 
 // done
 //   1NNN 2NNN 00EE            jump, call, return
 //   3XNN 4XNN 5XY0 9XY0       skips
 //   6XNN 7XNN ANNN            set V[X], add to V[X], set I
 
-// todo (see the end of main.asm)
+// todo
 //   CXNN, 8XY?, FX07 FX1E FX33 FX55 FX65
 //   timers (FX15 FX18) at 60Hz
 //   00E0 DXYN EX9E EXA1 FX0A FX29 + font + SDL2 (uncomment the LIBS line in the Makefile)
-//   a real run loop instead of 10 opcodes
+//   bounds checks on I for the opcodes that read / write memory (DXYN FX33 FX55 FX65)
 
 // this is a learning project. first assembly program. expect bugs.

@@ -1,205 +1,245 @@
-default rel ; rip-relative addressing
-extern fopen, fread, fclose, printf
+default rel
+extern fopen, fread, fclose, fgetc, fprintf, stderr
+global main
 
-%macro GET_X 1 ; %1 = dest reg, X = bits 8..11 of the opcode (eax)
-    mov %1, eax
-    shr %1, 8
-    and %1, 0xF
+; all machine state is one block, memory first. r12 points at it
+OFF_V       equ 4096
+OFF_I       equ OFF_V + 16
+OFF_STACK   equ OFF_I + 2
+OFF_SPTR    equ OFF_STACK + 32          ; next free slot, 0 = empty
+STATE_SZ    equ OFF_SPTR + 1
+
+%macro GET_X 1
+    movzx   %1, ah
+    and     %1, 0xF
 %endmacro
 
-%macro GET_Y 1 ; %1 = dest reg, Y = bits 4..7 of the opcode (eax)
-    mov %1, eax
-    shr %1, 4
-    and %1, 0xF
+%macro GET_Y 1
+    movzx   %1, al
+    shr     %1, 4
 %endmacro
 
-section .data
-    mode_rb db "rb", 0
-    fmt db "%04X", 10, 0
-    ; handler per upper nibble of the opcode (index = upper nibble)
-    table dq op_0xxx,    op_1nnn,    op_2nnn,    op_3xnn    ; 0 1 2 3
-          dq op_4xnn,    op_5xy0,    op_6xnn,    op_7xnn    ; 4 5 6 7
-          dq op_unknown, op_9xy0,    op_annn,    op_unknown ; 8 9 A B
-          dq op_unknown, op_unknown, op_unknown, op_unknown ; C D E F
+%macro CMP_XY 0
+    test    al, 0x0F                    ; low nibble must be 0
+    jnz     op_unknown
+    GET_X   ecx
+    GET_Y   esi
+    mov     dl, [r12 + OFF_V + rcx]     ; cmp can't take two memory operands
+    cmp     dl, [r12 + OFF_V + rsi]
+%endmacro
+
+section .rodata
+mode_rb:        db "rb", 0
+
+err_unknown:    db "bad opcode %04X at %04X", 10, 0
+err_usage:      db "usage: chip8 rom", 10, 0
+err_pc:         db "bad pc %04X", 10, 0
+err_overflow:   db "stack full at %04X", 10, 0
+err_underflow:  db "stack empty at %04X", 10, 0
+err_open:       db "can't open rom", 10, 0
+err_toobig:     db "rom too big", 10, 0
+err_empty:      db "rom empty", 10, 0
+
+align 8
+table:          dq op_0xxx,    op_1nnn,    op_2nnn,    op_3xnn
+                dq op_4xnn,    op_5xy0,    op_6xnn,    op_7xnn
+                dq op_unknown, op_9xy0,    op_annn,    op_unknown
+                dq op_unknown, op_unknown, op_unknown, op_unknown
+
+; indexed by load_rom's return value
+rom_errs:       dq 0, err_open, err_toobig, err_empty
 
 section .bss
-    mem resb 4096 ; chip8 memory (= 4KB)
-    v   resb 16   ; V0 ~ VF registers
-    i   resw 1    ; I register
-    stack resw 16 ; call stack: 16 return addresses (2 byte each)
-    sptr resb 1   ; stack pointer (idx into stack, 0 = empty)
+state:          resb STATE_SZ
 
 section .text
-    global main
 
 main:
-    push rbx ; callee-saved: EBX = CHIP-8 PC (kept until ret)
-    push r12 ; callee-saved: R12 = &mem (kept until ret)
-    sub rsp, 8 ; align stack to 16 bytes (ret addr + 2 pushes + 8)
-    cmp edi, 2 ; need argv[1]
-    jl .fail
-    mov rdi, [rsi + 8] ; argv[1]
-    call load_rom
-    test eax, eax
-    jnz .fail
+    push    rbx
+    push    r12
+    sub     rsp, 8                      ; align stack to 16
+    cmp     edi, 2
+    jl      .usage
+    mov     rdi, [rsi + 8]
+    call    load_rom
+    test    eax, eax
+    jnz     .rom_fail
 
-    mov ebx, 0x200 ; EBX = CHIP-8 PC
-    lea r12, [mem] ; base address (rip-relative can't be combined with an index)
+    mov     ebx, 0x200
+    lea     r12, [state]
 
 .loop:
-    ; fetch
-    movzx eax, word [r12 + rbx] ; read 2 bytes (little endian)
-    rol ax, 8 ; swap bytes to big endian opcode
+    cmp     ebx, 0xFFE                  ; last valid pc, an opcode is 2 bytes
+    ja      .bad_pc
 
-    add ebx, 2
+    movzx   eax, word [r12 + rbx]
+    rol     ax, 8                       ; big endian
+    add     ebx, 2
 
-    ; decode: branch to the upper nibble
-    mov ecx, eax
-    shr ecx, 12 ; upper 4 bits -> 0 ~ 15
-    lea rdx, [table]
-    jmp [rdx + rcx * 8] ; each table entry is 8 bytes
+    mov     ecx, eax
+    shr     ecx, 12
+    lea     rdx, [table]
+    jmp     [rdx + rcx * 8]
 
-.next: ; handlers jump back here
-    cmp ebx, 0x200 + 20 ; only the first 10 opcodes for now
-    jb .loop
+.next:                                  ; handlers jump here, they don't ret
+    jmp     .loop
 
-    xor eax, eax ; return 0
-    add rsp, 8
-    pop r12 ; restore callee-saved regs right before returning
-    pop rbx
-    ret
+.usage:
+    lea     rsi, [err_usage]
+    jmp     die
+.rom_fail:
+    lea     rdx, [rom_errs]
+    mov     rsi, [rdx + rax * 8]
+    jmp     die
+.bad_pc:
+    lea     rsi, [err_pc]
+    mov     edx, ebx
+    jmp     die
+
+.quit:
+    xor     eax, eax
+    jmp     .exit
 .fail:
-    mov eax, 1
-    add rsp, 8
-    pop r12
-    pop rbx
+    mov     eax, 1
+.exit:
+    add     rsp, 8
+    pop     r12
+    pop     rbx
     ret
 
-; opcode handlers: eax = opcode, jump (not ret) back to main.next
-op_0xxx: ; ret (0x00EE) only for now, 00E0 falls to op_unknown
-    cmp ax, 0x00EE
-    jne op_unknown
-    movzx ecx, byte [sptr]
-    dec ecx ; sptr points to the next free slot, so step back first
-    mov [sptr], cl
-    lea rdx, [stack]
-    movzx ebx, word [rdx + rcx * 2] ; 2 bytes per entry
-    jmp main.next
+; handlers: eax = opcode
+op_0xxx:
+    cmp     ax, 0x00EE
+    jne     op_unknown
+    movzx   ecx, byte [r12 + OFF_SPTR]
+    test    ecx, ecx
+    jz      stack_underflow
+    dec     ecx
+    mov     [r12 + OFF_SPTR], cl
+    movzx   ebx, word [r12 + OFF_STACK + rcx * 2]
+    jmp     main.next
 
-op_1nnn: ; EBX = NNN
-    and eax, 0x0FFF
-    mov ebx, eax
-    jmp main.next
+op_1nnn:
+    and     eax, 0x0FFF
+    mov     ebx, eax
+    jmp     main.next
 
 op_2nnn:
-    movzx ecx, byte [sptr]
-    lea rdx, [stack]
-    mov [rdx + rcx * 2], bx ; push return address (PC already points past the call)
-    inc ecx
-    mov [sptr], cl
-    and eax, 0x0FFF
-    mov ebx, eax
-    jmp main.next
+    movzx   ecx, byte [r12 + OFF_SPTR]
+    cmp     ecx, 16
+    jae     stack_overflow
+    mov     [r12 + OFF_STACK + rcx * 2], bx ; pc is already past the call
+    inc     ecx
+    mov     [r12 + OFF_SPTR], cl
+    jmp     op_1nnn
 
-op_3xnn: ; skip next if V[X] == NN
-    GET_X ecx
-    lea rdx, [v]
-    cmp [rdx + rcx], al ; al = NN
-    je skip_next
-    jmp main.next
+op_3xnn:
+    GET_X   ecx
+    cmp     [r12 + OFF_V + rcx], al
+    je      skip_next
+    jmp     main.next
 
-op_4xnn: ; skip next if V[X] != NN
-    GET_X ecx
-    lea rdx, [v]
-    cmp [rdx + rcx], al
-    jne skip_next
-    jmp main.next
+op_4xnn:
+    GET_X   ecx
+    cmp     [r12 + OFF_V + rcx], al
+    jne     skip_next
+    jmp     main.next
 
-op_5xy0: ; skip next if V[X] == V[Y]
-    test al, 0x0F ; lowest nibble must be 0
-    jnz op_unknown
-    GET_X ecx
-    GET_Y esi
-    lea rdx, [v]
-    mov r8b, [rdx + rcx] ; cmp can't take two mem operands
-    cmp r8b, [rdx + rsi]
-    je skip_next
-    jmp main.next
+op_5xy0:
+    CMP_XY
+    je      skip_next
+    jmp     main.next
 
-op_6xnn: ; V[X] = NN
-    GET_X ecx
-    lea rdx, [v]
-    mov [rdx + rcx], al ; al = lower byte = NN
-    jmp main.next
+op_6xnn:
+    GET_X   ecx
+    mov     [r12 + OFF_V + rcx], al
+    jmp     main.next
 
-op_7xnn: ; V[X] += NN (byte add wraps at 256, VF untouched)
-    GET_X ecx
-    lea rdx, [v]
-    add [rdx + rcx], al ; al = NN
-    jmp main.next
+op_7xnn:
+    GET_X   ecx
+    add     [r12 + OFF_V + rcx], al
+    jmp     main.next
 
-op_9xy0: ; skip next if V[X] != V[Y]
-    test al, 0x0F ; lowest nibble must be 0
-    jnz op_unknown
-    GET_X ecx
-    GET_Y esi
-    lea rdx, [v]
-    mov r8b, [rdx + rcx] ; cmp can't take two mem operands
-    cmp r8b, [rdx + rsi]
-    jne skip_next
-    jmp main.next
+op_9xy0:
+    CMP_XY
+    jne     skip_next
+    jmp     main.next
 
-op_annn: ; I = NNN
-    and eax, 0x0FFF
-    mov [i], ax
-    jmp main.next
+op_annn:
+    and     eax, 0x0FFF
+    mov     [r12 + OFF_I], ax
+    jmp     main.next
 
-skip_next: ; shared by the skip ops: pc += 2 (skip one opcode)
-    add ebx, 2
-    jmp main.next
+skip_next:
+    add     ebx, 2
+    jmp     main.next
 
-; not implemented yet (or invalid opcode), print it for now
-; once every group is implemented, this should report invalid opcodes and stop
-; 00E0 8XY? BNNN CXNN DXYN EX9E EXA1 FX??
-; TODO:
-;   1. CXNN: V[X] = rand() & NN
-;   2. 8XY?: 16 sub-ops, mind VF (carry/borrow/shifted-out bit) and the X == F case
-;   3. FX07 FX1E FX33 FX55 FX65 (no I/O needed)
-;   4. timers (FX15 FX18): decrement at 60Hz
-;   5. display/input (needs SDL or terminal): 00E0 DXYN EX9E EXA1 FX0A FX29
-;   6. replace the 10-opcode limit in main.next with a real run loop
+stack_overflow:
+    lea     rsi, [err_overflow]
+    lea     edx, [rbx - 2]              ; pc was already advanced
+    jmp     die
+
+stack_underflow:
+    lea     rsi, [err_underflow]
+    lea     edx, [rbx - 2]
+    jmp     die
+
 op_unknown:
-    lea rdi, [fmt]
-    mov esi, eax
-    xor eax, eax ; no vector args for printf
-    call printf wrt ..plt
-    jmp main.next
+    mov     edx, eax
+    lea     ecx, [rbx - 2]
+    lea     rsi, [err_unknown]
+    jmp     die
 
-; rdi = path, eax = 0 ok / 1 fail
+; rsi = format, edx / ecx = its args
+die:
+    mov     rdi, [stderr wrt ..got]
+    mov     rdi, [rdi]
+    xor     eax, eax
+    call    fprintf wrt ..plt
+    jmp     main.fail
+
+; rdi = path, eax = 0 ok / 1 can't open / 2 too big / 3 empty
 load_rom:
-    push rbx ; callee-saved, align stack
-    lea rsi, [mode_rb] ; rdi = path already
-    call fopen wrt ..plt
-    test rax, rax ; NULL = fail
-    jz .fail
-    mov rbx, rax ; FILE*
+    push    rbx
+    sub     rsp, 16                     ; [rsp] = bytes read, [rsp + 8] = fgetc result
+    lea     rsi, [mode_rb]
+    call    fopen wrt ..plt
+    test    rax, rax
+    jz      .open_fail
+    mov     rbx, rax
 
-    lea rdi, [mem + 0x200] ; dest
-    mov esi, 1 ; elem size
-    mov edx, 4096 - 0x200 ; max cnt (= 3584)
-    mov rcx, rbx
-    call fread wrt ..plt
+    lea     rdi, [state + 0x200]
+    mov     esi, 1
+    mov     edx, 4096 - 0x200
+    mov     rcx, rbx
+    call    fread wrt ..plt
+    mov     [rsp], rax
 
-    mov rdi, rbx ; FILE*
-    mov rbx, rax ; keep bytes read across fclose
-    call fclose wrt ..plt
+    mov     rdi, rbx
+    call    fgetc wrt ..plt             ; one more byte, eof (-1) means the rom fit
+    mov     [rsp + 8], eax
 
-    xor eax, eax
-    test rbx, rbx ; 0 bytes read (empty file / read error) = fail
-    setz al
-    pop rbx
+    mov     rdi, rbx
+    call    fclose wrt ..plt
+
+    cmp     dword [rsp + 8], -1
+    jne     .too_big
+    cmp     qword [rsp], 0
+    je      .empty
+
+    xor     eax, eax
+    jmp     .done
+.open_fail:
+    mov     eax, 1
+    jmp     .done
+.too_big:
+    mov     eax, 2
+    jmp     .done
+.empty:
+    mov     eax, 3
+.done:
+    add     rsp, 16
+    pop     rbx
     ret
-.fail:
-    mov eax, 1
-    pop rbx
-    ret
+
+section .note.GNU-stack noalloc noexec nowrite progbits
