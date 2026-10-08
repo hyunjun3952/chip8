@@ -33,7 +33,9 @@ section .text
     global main
 
 main:
-    push rbx ; save rbx, align stack (kept until ret)
+    push rbx ; callee-saved: EBX = CHIP-8 PC (kept until ret)
+    push r12 ; callee-saved: R12 = &mem (kept until ret)
+    sub rsp, 8 ; align stack to 16 bytes (ret addr + 2 pushes + 8)
     cmp edi, 2 ; need argv[1]
     jl .fail
     mov rdi, [rsi + 8] ; argv[1]
@@ -42,11 +44,11 @@ main:
     jnz .fail
 
     mov ebx, 0x200 ; EBX = CHIP-8 PC
+    lea r12, [mem] ; base address (rip-relative can't be combined with an index)
 
 .loop:
     ; fetch
-    lea rdx, [mem] ; base address (rip-relative can't be combined with an index)
-    movzx eax, word [rdx + rbx] ; read 2 bytes (little endian)
+    movzx eax, word [r12 + rbx] ; read 2 bytes (little endian)
     rol ax, 8 ; swap bytes to big endian opcode
 
     add ebx, 2
@@ -62,10 +64,14 @@ main:
     jb .loop
 
     xor eax, eax ; return 0
-    pop rbx ; restore rbx right before returning
+    add rsp, 8
+    pop r12 ; restore callee-saved regs right before returning
+    pop rbx
     ret
 .fail:
     mov eax, 1
+    add rsp, 8
+    pop r12
     pop rbx
     ret
 
@@ -88,7 +94,7 @@ op_1nnn: ; EBX = NNN
 op_2nnn:
     movzx ecx, byte [sptr]
     lea rdx, [stack]
-    mov [rdx + rcx * 2], bx    
+    mov [rdx + rcx * 2], bx ; push return address (PC already points past the call)
     inc ecx
     mov [sptr], cl
     and eax, 0x0FFF
