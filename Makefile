@@ -11,7 +11,7 @@ main.o: main.asm
 	$(NASM) $(NFLAGS) $< -o $@
 
 run: chip8
-	./chip8 pong.ch8
+	./chip8 roms/pong.ch8
 
 clean:
 	rm -f main.o chip8

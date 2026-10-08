@@ -3,7 +3,7 @@
 
 // build / run
 //   make        (needs nasm + gcc)
-//   make run    (runs pong.ch8)
+//   make run    (runs roms/pong.ch8)
 //   ./chip8 some.ch8
 
 // CHIP-8 is a fake computer from the 1970s. the whole machine is
